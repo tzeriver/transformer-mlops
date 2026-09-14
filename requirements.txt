@@ -1,0 +1,13 @@
+# Pinned dependencies. Install torch separately (CPU-only wheels):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+fastapi==0.141.1
+uvicorn==0.52.4
+httpx==0.28.1
+pydantic==2.13.5
+starlette==1.6.0
+scikit-learn==1.9.1
+scipy==1.18.1
+numpy==2.5.3
+pytest==9.1.1
+ruff==0.16.7

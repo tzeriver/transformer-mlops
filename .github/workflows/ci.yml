@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Lint
+        run: ruff check src tests scripts
+
+      - name: Unit tests
+        run: python -m pytest tests/ -q
+
+      - name: Train model
+        run: python src/train.py --epochs 8 --out artifacts
+
+      - name: Evaluate (quality gate)
+        run: python src/evaluate.py --min-accuracy 0.85
+
+      - name: Build container image
+        run: docker build -t transformer-mlops:${{ github.sha }} .
+
+      - name: Smoke-test the image
+        run: |
+          docker run -d -p 8000:8000 --name mlops-smoke transformer-mlops:${{ github.sha }}
+          sleep 10
+          curl -sf http://localhost:8000/health
+          curl -sf -X POST http://localhost:8000/predict \
+            -H 'Content-Type: application/json' \
+            -d '{"text":"we trained the transformer for ten epochs with adam"}'
+          docker stop mlops-smoke
