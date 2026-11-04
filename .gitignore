@@ -4,4 +4,7 @@ __pycache__/
 .pytest_cache/
 artifacts/*.pt
 artifacts/*.json
+artifacts/gnn/
+mlruns/
+mlflow.db
 .DS_Store

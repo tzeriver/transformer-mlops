@@ -13,6 +13,57 @@ CI pipeline, a container image, and a weekly drift check.
 - **API** — FastAPI service (`src/serve.py`):
   - `GET /health` → `{"status": "ok"}`
   - `POST /predict` with `{"text": "..."}` → `{"label", "confidence", "probabilities"}`
+  - `POST /predict-solubility` with `{"smiles": "CCO"}` → `{"smiles", "predicted_log_solubility"}`
+    (ESOL GNN track; invalid SMILES → 422)
+
+## ESOL GNN track (Gap 2 + Gap 4)
+
+A second track in the same repo: a small GCN (plain PyTorch, no
+torch-geometric) predicting water solubility (log mol/L) on MoleculeNet ESOL
+(~1,128 compounds, `data/esol.csv`, DeepChem mirror). RDKit turns each SMILES
+into a molecular graph (atoms = nodes, bonds = edges, atom + bond features);
+2 message-passing layers with bond-gated messages, global mean pooling, MLP
+head. The transformer track is untouched — separate module (`src/gnn/`),
+separate artifacts (`artifacts/gnn/`).
+
+Evaluation honesty: the headline number uses a **scaffold split** (Bemis-Murcko
+scaffolds never shared across train/val/test), with a random-split model
+trained for contrast — the gap between the two is the point.
+
+```bash
+pip install -r requirements.txt   # adds rdkit, mlflow, prefect (torch separate, as above)
+
+python src/gnn/train.py --epochs 100
+# trains scaffold model -> artifacts/gnn/model.pt + metrics.json,
+# trains an identical random-split model for contrast, logs both runs to
+# ./mlruns, and runs the champion/challenger registry gate (a new model only
+# becomes champion when it beats the current champion's validation RMSE)
+
+python src/gnn/evaluate.py --max-rmse 1.5   # recomputes scaffold test RMSE from the artifact
+
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+# experiment "esol-gnn", model registry "esol-gnn" (champion / challenger aliases)
+
+python flows/gnn_flow.py   # Prefect: data prep -> train -> evaluate -> register (retries=2 per task)
+# Sandbox note: this environment's proxy vars break Prefect's ephemeral
+# server startup (httpx chokes parsing them); the flow only talks to
+# localhost, so run it with proxies unset:
+# env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY -u no_proxy -u NO_PROXY python flows/gnn_flow.py
+
+uvicorn src.serve:app --port 8000
+curl -X POST localhost:8000/predict-solubility \
+  -H 'Content-Type: application/json' \
+  -d '{"smiles":"CCO"}'
+# {"smiles":"CCO","predicted_log_solubility":...}
+```
+
+Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64): scaffold-split
+test RMSE **1.161** (val 1.043) vs random-split test RMSE **0.956** (val 0.915)
+— the ~0.20 gap is the scaffold split doing its job; the random number flatters
+the model. Current artifact is from the Prefect flow run; the CLI run matched
+within 0.001 (scaffold test 1.160). Registry: v1 = champion (val 1.043), v2 =
+challenger (val 1.0431, missed promotion by 0.0002 — the gate working as
+designed). See `artifacts/gnn/metrics.json`.
 
 ## Quickstart
 
@@ -63,8 +114,19 @@ src/
   model.py     tiny transformer classifier
   train.py     training loop, saves artifacts/model.pt + metrics.json
   evaluate.py  test-set evaluation + CI quality gate
-  serve.py     FastAPI inference service
-tests/         unit + API tests
+  serve.py     FastAPI inference service (/predict + /predict-solubility)
+  gnn/
+    featurize.py   RDKit SMILES -> molecular graph (atom/bond features)
+    data.py        ESOL loading, scaffold + random splits
+    model.py       plain-PyTorch GCN regressor (bond-gated messages)
+    pipeline.py    train/evaluate/champion-challenger promotion (MLflow)
+    train.py       CLI: scaffold model + random-split contrast + registry gate
+    evaluate.py    artifact evaluation + RMSE quality gate
+tests/         unit + API tests (incl. tests/test_gnn.py)
+flows/
+  gnn_flow.py  Prefect: data prep -> train -> evaluate -> register
+data/
+  esol.csv     MoleculeNet ESOL (DeepChem mirror, 1,128 compounds)
 scripts/
   drift_check.py   weekly drift monitor
 .github/workflows/ci.yml
@@ -80,8 +142,29 @@ requirements.txt   (pinned; install torch separately per instructions above)
 - [x] Drift check healthy (no drift on fresh data)
 - [x] Live endpoint verified: `GET /health` → `{"status":"ok"}`; `POST /predict`
       correctly classified methods/results/background samples at ~1.0 confidence
-- [ ] Container image build verified in CI (pending first push — no container daemon here)
-- [ ] Public repo + live public endpoint (pending GitHub/AWS access — see below)
+- [x] Container image build verified in CI — green:
+  https://github.com/tzeriver/transformer-mlops/actions/runs/34793760990
+  (lint → tests → train → quality gate → docker build → image smoke test)
+- [x] Public repo: https://github.com/tzeriver/transformer-mlops
+- [ ] Live public endpoint via AWS App Runner — deferred until interview prep
+      (workflow drafted at `.github/workflows/deploy.yml`, not yet added to repo;
+      ~10 min to activate when needed)
+
+## Deploy (AWS App Runner)
+
+1. IAM user `mlops-deployer` with `AmazonEC2ContainerRegistryFullAccess`,
+   `AWSAppRunnerFullAccess`, plus an inline policy allowing
+   `iam:GetRole/CreateRole/AttachRolePolicy/PassRole` on
+   `arn:aws:iam::<account-id>:role/AppRunnerECRAccessRole`. Create an access key.
+2. Repo secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+   (Settings → Secrets and variables → Actions).
+3. Add `.github/workflows/deploy.yml`, then run it once via
+   Actions → deploy → Run workflow.
+
+Every green CI run on `main` then auto-deploys: retrain → rebuild → push to ECR →
+create/update the App Runner service (health checks hit `/health`) → smoke-test
+the live endpoint. ~$50/mo if left running 24/7 in us-east-1; delete the service
+when not demoing.
 
 **Pending access:** pushing to GitHub (`tzeriver`) and deploying to AWS both need
 account access this environment doesn't have. The repo is ready to `git push`, and

@@ -9,5 +9,8 @@ starlette==1.6.0
 scikit-learn==1.9.1
 scipy==1.18.1
 numpy==2.5.3
+rdkit==2026.9.1
+mlflow==3.17.2
+prefect==3.9.1
 pytest==9.1.1
 ruff==0.16.7
