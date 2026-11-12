@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import torch
 from rdkit import Chem, RDLogger
+from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors
 from rdkit.Chem.Scaffolds import MurckoScaffold
 
 # RDKit prints a parse error to stderr for every bad SMILES; we raise our own
@@ -45,6 +46,13 @@ _BOND_TYPES = [
 ]
 BOND_DIM = (len(_BOND_TYPES) + 1) + 1 + 1
 
+# Whole-molecule descriptors (optional model input, see GCNRegressor desc_dim):
+#   Crippen logP, molecular weight, rotatable bonds, aromatic atom fraction,
+#   TPSA, H-bond donors, H-bond acceptors, ring count.
+# The first four are Delaney's original ESOL inputs; message passing over a
+# few bonds can't easily rebuild these global properties.
+DESC_DIM = 8
+
 
 def _one_hot(value, choices) -> list[float]:
     vec = [0.0] * (len(choices) + 1)
@@ -72,8 +80,23 @@ def _bond_features(bond) -> list[float]:
     )
 
 
+def _mol_descriptors(mol) -> list[float]:
+    heavy = mol.GetNumHeavyAtoms()
+    return [
+        Crippen.MolLogP(mol),
+        Descriptors.MolWt(mol),
+        float(Lipinski.NumRotatableBonds(mol)),
+        sum(a.GetIsAromatic() for a in mol.GetAtoms()) / max(heavy, 1),
+        rdMolDescriptors.CalcTPSA(mol),
+        float(Lipinski.NumHDonors(mol)),
+        float(Lipinski.NumHAcceptors(mol)),
+        float(rdMolDescriptors.CalcNumRings(mol)),
+    ]
+
+
 class MolGraph:
-    """One molecule: node features, directed edge list, bond features, target."""
+    """One molecule: node features, directed edge list, bond features,
+    molecule-level descriptors, target."""
 
     def __init__(
         self,
@@ -83,6 +106,7 @@ class MolGraph:
         y: float | None = None,
         smiles: str = "",
         scaffold: str = "",
+        desc: torch.Tensor | None = None,
     ):
         self.x = x
         self.edge_index = edge_index
@@ -90,6 +114,7 @@ class MolGraph:
         self.y = y
         self.smiles = smiles
         self.scaffold = scaffold
+        self.desc = desc
 
     @property
     def num_nodes(self) -> int:
@@ -117,10 +142,14 @@ def featurize(smiles: str, y: float | None = None) -> MolGraph:
         src += [i, j]
         dst += [j, i]
         attrs += [feats, feats]
-    edge_index = torch.tensor([src, dst], dtype=torch.long)
-    edge_attr = torch.tensor(attrs, dtype=torch.float32)
+    # reshape keeps bond-free molecules (methane, water, salts) at (2, 0) and
+    # (0, BOND_DIM) instead of torch's default (0,) for an empty list.
+    edge_index = torch.tensor([src, dst], dtype=torch.long).reshape(2, -1)
+    edge_attr = torch.tensor(attrs, dtype=torch.float32).reshape(-1, BOND_DIM)
+    desc = torch.tensor(_mol_descriptors(mol), dtype=torch.float32)
     return MolGraph(
-        x, edge_index, edge_attr, y=y, smiles=smiles, scaffold=_scaffold_smiles(mol)
+        x, edge_index, edge_attr, y=y, smiles=smiles, scaffold=_scaffold_smiles(mol),
+        desc=desc,
     )
 
 
@@ -157,3 +186,8 @@ def collate_graphs(graphs: list[MolGraph]):
         torch.cat(batches, dim=0),
         y,
     )
+
+
+def stack_descriptors(graphs: list[MolGraph]) -> torch.Tensor:
+    """(n_graphs, DESC_DIM) raw descriptors, in the same order as collate_graphs."""
+    return torch.stack([g.desc for g in graphs], dim=0)

@@ -8,9 +8,11 @@ current champion's validation RMSE.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,9 +22,16 @@ from torch import nn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.gnn.data import featurize_rows, load_esol_rows, random_split, scaffold_split
-from src.gnn.featurize import ATOM_DIM, BOND_DIM, collate_graphs
+from src.gnn.featurize import (
+    ATOM_DIM,
+    BOND_DIM,
+    DESC_DIM,
+    collate_graphs,
+    stack_descriptors,
+)
 from src.gnn.model import GCNRegressor
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MODEL_NAME = "esol-gnn"
 # MLflow 3.x refuses the plain file store (./mlruns) unless explicitly opted
 # in, so use the Gap 2 plan's own upgrade path: SQLite backend store, with
@@ -36,7 +45,31 @@ DEFAULT_CONFIG = {
     "batch_size": 32,
     "epochs": 100,
     "seed": 42,
+    # Architecture options; defaults reproduce the original model.
+    "pool": "mean",
+    "residual": False,
+    "descriptors": False,
 }
+_ARCH_KEYS = ("hidden_dim", "num_layers", "dropout", "pool", "residual", "descriptors")
+
+
+def build_model(config: dict, atom_dim: int = ATOM_DIM, bond_dim: int = BOND_DIM) -> GCNRegressor:
+    """Build a GCNRegressor from a train cfg or a saved artifact's config.
+
+    Missing architecture keys fall back to DEFAULT_CONFIG, so artifacts saved
+    before the pool/residual/descriptors options existed still load.
+    """
+    c = {k: config.get(k, DEFAULT_CONFIG[k]) for k in _ARCH_KEYS}
+    return GCNRegressor(
+        atom_dim=atom_dim,
+        bond_dim=bond_dim,
+        hidden_dim=c["hidden_dim"],
+        num_layers=c["num_layers"],
+        dropout=c["dropout"],
+        pool=c["pool"],
+        residual=c["residual"],
+        desc_dim=DESC_DIM if c["descriptors"] else 0,
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -44,14 +77,39 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def git_provenance() -> dict:
+    """Current commit + dirty flag; "unknown" if git is unavailable. Never raises."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=REPO_ROOT,
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {"git_commit": "unknown", "git_dirty": "unknown"}
+    return {"git_commit": commit or "unknown", "git_dirty": "true" if status.strip() else "false"}
+
+
 def prepare(csv_path: Path, seed: int = 42) -> dict:
-    """Load + featurize ESOL; return graphs and both splits."""
+    """Load + featurize ESOL; return graphs, both splits, and the raw CSV's sha256."""
     rows = load_esol_rows(Path(csv_path))
     graphs, skipped = featurize_rows(rows)
     return {
         "n_rows": len(rows),
         "n_graphs": len(graphs),
         "n_skipped": skipped,
+        "data_sha256": file_sha256(Path(csv_path)),
         "scaffold": scaffold_split(graphs, seed=seed),
         "random": random_split(graphs, seed=seed),
     }
@@ -62,17 +120,19 @@ def _batches(graphs, batch_size: int, shuffle: bool, rng: random.Random):
     if shuffle:
         rng.shuffle(items)
     for i in range(0, len(items), batch_size):
-        yield collate_graphs(items[i : i + batch_size])
+        chunk = items[i : i + batch_size]
+        x, edge_index, edge_attr, batch, y = collate_graphs(chunk)
+        yield x, edge_index, edge_attr, batch, stack_descriptors(chunk), y
 
 
 @torch.no_grad()
 def _predict_rmse(model, graphs, y_mean: float, y_std: float, batch_size: int = 256) -> float:
     model.eval()
     sq, n = 0.0, 0
-    for x, edge_index, edge_attr, batch, y in _batches(
+    for x, edge_index, edge_attr, batch, desc, y in _batches(
         graphs, batch_size, False, random.Random(0)
     ):
-        pred = model(x, edge_index, edge_attr, batch) * y_std + y_mean
+        pred = model(x, edge_index, edge_attr, batch, desc) * y_std + y_mean
         sq += float(((pred - y) ** 2).sum())
         n += len(y)
     return math.sqrt(sq / n)
@@ -85,6 +145,8 @@ def train_one(
     log_mlflow: bool = True,
     split_name: str = "scaffold",
     verbose: bool = True,
+    variant: str | None = None,
+    data_sha256: str | None = None,
 ) -> dict:
     """Train on one split; return metrics (+ artifact paths, mlflow run id)."""
     set_seed(cfg["seed"])
@@ -95,13 +157,10 @@ def train_one(
     )
     ys = torch.tensor([g.y for g in train_graphs])
     y_mean, y_std = float(ys.mean()), float(ys.std())
-    model = GCNRegressor(
-        atom_dim=ATOM_DIM,
-        bond_dim=BOND_DIM,
-        hidden_dim=cfg["hidden_dim"],
-        num_layers=cfg["num_layers"],
-        dropout=cfg["dropout"],
-    )
+    model = build_model(cfg)
+    if model.desc_dim:
+        d = stack_descriptors(train_graphs)
+        model.set_descriptor_stats(d.mean(dim=0), d.std(dim=0))
     opt = torch.optim.AdamW(model.parameters(), lr=cfg["lr"])
     loss_fn = nn.MSELoss()
     rng = random.Random(cfg["seed"])
@@ -112,21 +171,28 @@ def train_one(
 
         mlflow.set_tracking_uri(TRACKING_URI)
         mlflow.set_experiment("esol-gnn")
-        run = mlflow.start_run(run_name=f"{split_name}-seed{cfg['seed']}")
+        run_name = f"{split_name}-seed{cfg['seed']}"
+        if variant:
+            run_name = f"{variant}-{run_name}"
+        run = mlflow.start_run(run_name=run_name)
         run_id = run.info.run_id
         mlflow.log_params({**cfg, "split": split_name})
         mlflow.set_tag("split", split_name)
+        mlflow.log_param("variant", variant or "baseline")
+        mlflow.set_tag("variant", variant or "baseline")
+        mlflow.log_params(git_provenance())
+        mlflow.log_param("data_sha256", data_sha256 or "unknown")
 
     try:
         best_rmse, best_state = float("inf"), None
         for epoch in range(1, cfg["epochs"] + 1):
             model.train()
             total_loss, n = 0.0, 0
-            for x, edge_index, edge_attr, batch, y in _batches(
+            for x, edge_index, edge_attr, batch, desc, y in _batches(
                 train_graphs, cfg["batch_size"], True, rng
             ):
                 opt.zero_grad()
-                pred = model(x, edge_index, edge_attr, batch)
+                pred = model(x, edge_index, edge_attr, batch, desc)
                 loss = loss_fn(pred, (y - y_mean) / y_std)
                 loss.backward()
                 opt.step()
@@ -152,6 +218,7 @@ def train_one(
             "n_val": len(val_graphs),
             "n_test": len(test_graphs),
             **{k: cfg[k] for k in ("hidden_dim", "num_layers", "dropout", "lr", "batch_size", "epochs", "seed")},
+            **{k: cfg.get(k, DEFAULT_CONFIG[k]) for k in ("pool", "residual", "descriptors")},
         }
 
         if out is not None:
@@ -160,11 +227,7 @@ def train_one(
             torch.save(
                 {
                     "state_dict": best_state,
-                    "config": {
-                        "hidden_dim": cfg["hidden_dim"],
-                        "num_layers": cfg["num_layers"],
-                        "dropout": cfg["dropout"],
-                    },
+                    "config": {k: cfg.get(k, DEFAULT_CONFIG[k]) for k in _ARCH_KEYS},
                     "y_mean": y_mean,
                     "y_std": y_std,
                     "atom_dim": ATOM_DIM,
@@ -249,12 +312,6 @@ def evaluate_saved(
     bundle = torch.load(artifact_path, map_location="cpu", weights_only=False)
     data = prepare(Path(csv_path), seed=seed)
     graphs = data[split]["test"]
-    model = GCNRegressor(
-        atom_dim=bundle["atom_dim"],
-        bond_dim=bundle["bond_dim"],
-        hidden_dim=bundle["config"]["hidden_dim"],
-        num_layers=bundle["config"]["num_layers"],
-        dropout=bundle["config"]["dropout"],
-    )
+    model = build_model(bundle["config"], bundle["atom_dim"], bundle["bond_dim"])
     model.load_state_dict(bundle["state_dict"])
     return _predict_rmse(model, graphs, bundle["y_mean"], bundle["y_std"])
