@@ -82,13 +82,17 @@ The same 5 splits were used to choose the variants, so treat ~0.82 as
 slightly optimistic. A single split's RMSE moves by ~±0.08, so compare
 variants over several split seeds, not one run.
 
-Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64): scaffold-split
-test RMSE **1.161** (val 1.043) vs random-split test RMSE **0.956** (val 0.915)
-— the ~0.20 gap is the scaffold split doing its job; the random number flatters
-the model. Current artifact is from the Prefect flow run; the CLI run matched
-within 0.001 (scaffold test 1.160). Registry: v1 = champion (val 1.043), v2 =
-challenger (val 1.0431, missed promotion by 0.0002 — the gate working as
-designed). See `artifacts/gnn/metrics.json`.
+Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64,
+`--pool mean_sum_max --descriptors`, variant `msm-desc`): scaffold-split test
+RMSE **0.939** (val 0.745) vs random-split test RMSE **0.669** (val 0.559) —
+the scaffold split stays the honest number; the random one flatters the model.
+The seed-42 scaffold split is one of the harder ones, so this sits above the
+5-split mean in the table above. The previous default model scored 1.174 on
+the same split. Registry: this run was promoted to champion (val 0.745 beat the
+previous champion's 1.043). See `artifacts/gnn/metrics.json`.
+
+Out of domain: ESOL is organic molecules. Predictions for inorganics, salts
+or water itself are returned without warning and are not meaningful.
 
 ## Quickstart
 
