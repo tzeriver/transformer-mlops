@@ -12,7 +12,7 @@ from src.train import train_model
 
 def _client_with_tiny_model(tmp_path):
     out = tmp_path / "artifacts"
-    train_model(epochs=1, n_per_class=40, batch_size=16, seed=0, out=out, verbose=False)
+    train_model(epochs=1, n_per_class=40, batch_size=16, seed=0, out=out, verbose=False, log_mlflow=False)
     # reset the lazy singleton so it picks up the monkeypatched path
     serve._model = None
     return TestClient(serve.app), out
