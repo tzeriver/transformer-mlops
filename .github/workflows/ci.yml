@@ -29,6 +29,15 @@ jobs:
       - name: Train model
         run: python src/train.py --epochs 8 --out artifacts
 
+      - name: Upload MLflow tracking store
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-tracking-${{ github.sha }}
+          path: |
+            mlflow.db
+            mlruns/
+
       - name: Evaluate (quality gate)
         run: python src/evaluate.py --min-accuracy 0.85
 
