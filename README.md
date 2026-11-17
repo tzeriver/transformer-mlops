@@ -57,13 +57,42 @@ curl -X POST localhost:8000/predict-solubility \
 # {"smiles":"CCO","predicted_log_solubility":...}
 ```
 
-Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64): scaffold-split
-test RMSE **1.161** (val 1.043) vs random-split test RMSE **0.956** (val 0.915)
-— the ~0.20 gap is the scaffold split doing its job; the random number flatters
-the model. Current artifact is from the Prefect flow run; the CLI run matched
-within 0.001 (scaffold test 1.160). Registry: v1 = champion (val 1.043), v2 =
-challenger (val 1.0431, missed promotion by 0.0002 — the gate working as
-designed). See `artifacts/gnn/metrics.json`.
+Model options (all off by default, so the default model is unchanged):
+
+```bash
+python src/gnn/train.py --pool mean_sum_max --descriptors --variant msm-desc
+#   --pool mean_sum_max  concat mean + scaled sum + max pooling (molecule size, extreme atoms)
+#   --descriptors        add 8 RDKit descriptors (logP, MW, TPSA, ...) to the head
+#   --residual           skip connections after layer 1 (pair with --num-layers 4)
+#   --variant NAME       MLflow run name prefix + "variant" param/tag
+```
+
+Every MLflow run also logs `git_commit`, `git_dirty`, and the raw CSV's
+`data_sha256`.
+
+Ablation over 5 scaffold splits (split seeds 0-4, 100 epochs, best-val epoch):
+
+| Variant | Scaffold test RMSE (mean ± sd) |
+|---|---|
+| default (2-layer GCN, mean pool) | 1.077 ± 0.086 |
+| `--pool mean_sum_max --descriptors` | 0.819 ± 0.048 (better on 5/5 splits) |
+| + `--residual --num-layers 4` | 0.814 ± 0.047 (depth adds ~nothing) |
+
+The same 5 splits were used to choose the variants, so treat ~0.82 as
+slightly optimistic. A single split's RMSE moves by ~±0.08, so compare
+variants over several split seeds, not one run.
+
+Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64,
+`--pool mean_sum_max --descriptors`, variant `msm-desc`): scaffold-split test
+RMSE **0.939** (val 0.745) vs random-split test RMSE **0.669** (val 0.559) —
+the scaffold split stays the honest number; the random one flatters the model.
+The seed-42 scaffold split is one of the harder ones, so this sits above the
+5-split mean in the table above. The previous default model scored 1.174 on
+the same split. Registry: this run was promoted to champion (val 0.745 beat the
+previous champion's 1.043). See `artifacts/gnn/metrics.json`.
+
+Out of domain: ESOL is organic molecules. Predictions for inorganics, salts
+or water itself are returned without warning and are not meaningful.
 
 ## Quickstart
 

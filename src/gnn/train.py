@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from src.gnn.model import POOLS
 from src.gnn.pipeline import DEFAULT_CONFIG, prepare, promote_champion, train_one
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -32,7 +33,14 @@ def main() -> None:
     p.add_argument("--hidden-dim", type=int, default=DEFAULT_CONFIG["hidden_dim"])
     p.add_argument("--num-layers", type=int, default=DEFAULT_CONFIG["num_layers"])
     p.add_argument("--batch-size", type=int, default=DEFAULT_CONFIG["batch_size"])
+    p.add_argument("--dropout", type=float, default=DEFAULT_CONFIG["dropout"])
     p.add_argument("--seed", type=int, default=DEFAULT_CONFIG["seed"])
+    p.add_argument("--variant", type=str, default=None, help="tag for MLflow run name + params")
+    p.add_argument("--pool", choices=POOLS, default=DEFAULT_CONFIG["pool"])
+    p.add_argument("--residual", action="store_true", help="skip connections after layer 1")
+    p.add_argument(
+        "--descriptors", action="store_true", help="add RDKit molecule descriptors to the head"
+    )
     p.add_argument("--out", type=Path, default=DEFAULT_OUT)
     p.add_argument("--no-mlflow", action="store_true", help="skip MLflow tracking + registry")
     args = p.parse_args()
@@ -44,7 +52,11 @@ def main() -> None:
         "hidden_dim": args.hidden_dim,
         "num_layers": args.num_layers,
         "batch_size": args.batch_size,
+        "dropout": args.dropout,
         "seed": args.seed,
+        "pool": args.pool,
+        "residual": args.residual,
+        "descriptors": args.descriptors,
     }
     data = prepare(args.csv, seed=args.seed)
     print(
@@ -52,11 +64,13 @@ def main() -> None:
         f"({data['n_skipped']} invalid SMILES skipped)",
         flush=True,
     )
+    provenance = {"variant": args.variant, "data_sha256": data["data_sha256"]}
     scaffold = train_one(
-        data["scaffold"], cfg, out=args.out, log_mlflow=not args.no_mlflow
+        data["scaffold"], cfg, out=args.out, log_mlflow=not args.no_mlflow, **provenance
     )
     random_res = train_one(
-        data["random"], cfg, out=None, log_mlflow=not args.no_mlflow, split_name="random"
+        data["random"], cfg, out=None, log_mlflow=not args.no_mlflow, split_name="random",
+        **provenance,
     )
     metrics = scaffold["metrics"]
     metrics["random_test_rmse"] = random_res["metrics"]["test_rmse"]
