@@ -32,6 +32,12 @@ jobs:
       - name: Evaluate (quality gate)
         run: python src/evaluate.py --min-accuracy 0.85
 
+      - name: Train GNN model
+        run: python src/gnn/train.py --epochs 100
+
+      - name: Evaluate GNN (quality gate)
+        run: python src/gnn/evaluate.py --max-rmse 1.5
+
       - name: Build container image
         run: docker build -t transformer-mlops:${{ github.sha }} .
 
@@ -43,4 +49,7 @@ jobs:
           curl -sf -X POST http://localhost:8000/predict \
             -H 'Content-Type: application/json' \
             -d '{"text":"we trained the transformer for ten epochs with adam"}'
+          curl -sf -X POST http://localhost:8000/predict-solubility \
+            -H 'Content-Type: application/json' \
+            -d '{"smiles":"CCO"}'
           docker stop mlops-smoke
