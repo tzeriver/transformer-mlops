@@ -29,20 +29,11 @@ jobs:
       - name: Train model
         run: python src/train.py --epochs 8 --out artifacts
 
-      - name: Upload MLflow tracking store
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlflow-tracking-${{ github.sha }}
-          path: |
-            mlflow.db
-            mlruns/
-
       - name: Evaluate (quality gate)
         run: python src/evaluate.py --min-accuracy 0.85
 
       - name: Train GNN model
-        run: python src/gnn/train.py --epochs 100
+        run: python src/gnn/train.py --epochs 100 --pool mean_sum_max --descriptors --variant msm-desc
 
       - name: Evaluate GNN (quality gate)
         run: python src/gnn/evaluate.py --max-rmse 1.5
@@ -62,3 +53,12 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"smiles":"CCO"}'
           docker stop mlops-smoke
+
+      - name: Upload MLflow tracking store
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-tracking-${{ github.sha }}
+          path: |
+            mlflow.db
+            mlruns/

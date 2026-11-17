@@ -114,10 +114,12 @@ curl -X POST localhost:8000/predict \
 ## CI/CD (`.github/workflows/ci.yml`)
 
 Every push runs: **lint (ruff) → unit tests (pytest) → train → quality gate
-(`evaluate.py`, fails below 85% test accuracy) → train GNN → GNN quality gate
-(`src/gnn/evaluate.py`, fails above 1.5 scaffold test RMSE) → build container
-image → smoke-test the running image** (`/health` + a real `/predict` and
-`/predict-solubility` call).
+(`evaluate.py`, fails below 85% test accuracy) → train GNN (the served
+`msm-desc` variant) → GNN quality gate (`src/gnn/evaluate.py`, fails above 1.5
+scaffold test RMSE) → build container image → smoke-test the running image**
+(`/health` + a real `/predict` and `/predict-solubility` call). The last step,
+which runs even when an earlier one fails, uploads `mlflow.db` + `mlruns/`
+(both tracks' runs) as a downloadable run artifact.
 
 ## Container
 
