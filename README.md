@@ -114,8 +114,10 @@ curl -X POST localhost:8000/predict \
 ## CI/CD (`.github/workflows/ci.yml`)
 
 Every push runs: **lint (ruff) → unit tests (pytest) → train → quality gate
-(`evaluate.py`, fails below 85% test accuracy) → build container image →
-smoke-test the running image** (`/health` + a real `/predict` call).
+(`evaluate.py`, fails below 85% test accuracy) → train GNN → GNN quality gate
+(`src/gnn/evaluate.py`, fails above 1.5 scaffold test RMSE) → build container
+image → smoke-test the running image** (`/health` + a real `/predict` and
+`/predict-solubility` call).
 
 ## Container
 
@@ -131,9 +133,14 @@ verified in GitHub Actions (see CI).
 ## Monitoring
 
 `scripts/drift_check.py` re-evaluates the model on freshly generated data and
-compares against the baseline in `artifacts/metrics.json`. A scheduled weekly
-run flags drift (accuracy drop > 3pp); retraining is triggered only on drift —
-the loop runs quietly otherwise.
+compares against the baseline in `artifacts/metrics.json`, exiting 2 on drift
+(accuracy drop > 3pp). `.github/workflows/drift.yml` runs it every Monday
+06:00 UTC (or manually via Actions → drift → Run workflow); a drift result
+fails the run, which notifies the repo owner. Nothing retrains automatically.
+
+Because `artifacts/` is gitignored, the workflow trains a fresh baseline before
+checking, and the data is synthetic, so this exercises the monitoring loop
+rather than watching a deployed model.
 
 ## Layout
 
@@ -158,7 +165,8 @@ data/
   esol.csv     MoleculeNet ESOL (DeepChem mirror, 1,128 compounds)
 scripts/
   drift_check.py   weekly drift monitor
-.github/workflows/ci.yml
+.github/workflows/ci.yml      lint, tests, train + gate both tracks, image smoke test
+.github/workflows/drift.yml   weekly drift check
 Dockerfile
 requirements.txt   (pinned; install torch separately per instructions above)
 ```

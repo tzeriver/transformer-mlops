@@ -1,0 +1,30 @@
+name: drift
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      # artifacts/ is gitignored, so rebuild the baseline the same way CI does.
+      - name: Train model
+        run: python src/train.py --epochs 8 --out artifacts
+
+      # Exits 2 on drift, which fails the run and notifies the repo owner.
+      - name: Drift check
+        run: python scripts/drift_check.py
