@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import serve
-from src.gnn.data import scaffold_split
+from src.gnn.data import is_organic, load_aqsoldb_rows, replace_train, scaffold_split
 from src.gnn.domain import DomainChecker, build_domain
 from src.gnn.featurize import (
     ATOM_DIM,
@@ -230,3 +230,47 @@ def test_artifact_without_domain_still_serves(tmp_path, monkeypatch):
     r = TestClient(serve.app).post("/predict-solubility", json={"smiles": "O"})
     assert r.status_code == 200
     assert r.json()["nearest_train_similarity"] is None and r.json()["warnings"] == []
+
+
+def _write_aqsoldb(path, smiles_y):
+    from rdkit.Chem.inchi import MolToInchiKey
+
+    lines = ["ID,SMILES,Solubility,InChIKey"]
+    for i, (smi, y) in enumerate(smiles_y):
+        key = MolToInchiKey(parse_mol(smi)) if smi != "not a smiles" else "BAD"
+        lines.append(f'X-{i},"{smi}",{y},{key}')
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_aqsoldb_loader_keeps_organic_subset(tmp_path):
+    csv_path = tmp_path / "aq.csv"
+    _write_aqsoldb(csv_path, [
+        ("CCO", 1.1), ("[Na+].[Cl-]", 0.8), ("O", 1.7), ("CC[Si](C)(C)C", -3.0),
+        ("not a smiles", 0.0), ("c1ccccc1O", 0.0),
+    ])
+    rows, counts = load_aqsoldb_rows(csv_path)
+    assert [r[0] for r in rows] == ["CCO", "c1ccccc1O"]
+    assert counts == {"rows": 6, "unparseable": 1, "non_organic": 3}
+    assert is_organic(parse_mol("CCO")) and not is_organic(parse_mol("O"))
+
+
+def test_replace_train_removes_val_test_leaks(tmp_path):
+    graphs = [featurize(s, y=y) for s, y in _SMILES]
+    by = {g.smiles: g for g in graphs}
+    splits = {
+        "train": [by["CCO"]],
+        "val": [by["c1ccccc1"]],
+        "test": [by["C1CCCCC1"]],
+    }
+    rows = [
+        ("C1CCCCC1", -3.0, "XDTMQSROBMDMFD-UHFFFAOYSA-N"),  # cyclohexane: a test molecule
+        ("CC1CCCCC1", -3.8, "UAEPNZWRGJTJPN-UHFFFAOYSA-N"),  # shares its scaffold
+        ("Cc1ccccc1", -2.2, "YXFVVABEGXRONW-UHFFFAOYSA-N"),  # shares the val scaffold
+        ("CCCC", -2.6, "IJDNQMDRQITEOD-UHFFFAOYSA-N"),       # acyclic: kept
+    ]
+    new, info = replace_train(splits, rows, exclude_scaffolds=True)
+    assert [g.smiles for g in new["train"]] == ["CCCC"]
+    assert new["val"] == splits["val"] and new["test"] == splits["test"]
+    assert info["dropped_same_molecule"] == 1 and info["dropped_shared_scaffold"] == 2
+    new, info = replace_train(splits, rows, exclude_scaffolds=False)
+    assert sorted(g.smiles for g in new["train"]) == ["CC1CCCCC1", "CCCC", "Cc1ccccc1"]

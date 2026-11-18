@@ -22,12 +22,19 @@ from src.gnn.pipeline import DEFAULT_CONFIG, prepare, promote_champion, train_on
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_CSV = REPO_ROOT / "data" / "esol.csv"
+DEFAULT_AQSOLDB_CSV = REPO_ROOT / "data" / "aqsoldb.csv"
+DATASETS = ("esol", "aqsoldb-organic")
 DEFAULT_OUT = REPO_ROOT / "artifacts" / "gnn"
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--csv", type=Path, default=DEFAULT_CSV)
+    p.add_argument("--csv", type=Path, default=DEFAULT_CSV, help="ESOL CSV (val/test, and train for esol)")
+    p.add_argument(
+        "--dataset", choices=DATASETS, default="esol",
+        help="training data; aqsoldb-organic trains on AqSolDB's organic subset, minus ESOL val/test leaks",
+    )
+    p.add_argument("--aqsoldb-csv", type=Path, default=DEFAULT_AQSOLDB_CSV)
     p.add_argument("--epochs", type=int, default=DEFAULT_CONFIG["epochs"])
     p.add_argument("--lr", type=float, default=DEFAULT_CONFIG["lr"])
     p.add_argument("--hidden-dim", type=int, default=DEFAULT_CONFIG["hidden_dim"])
@@ -58,13 +65,21 @@ def main() -> None:
         "residual": args.residual,
         "descriptors": args.descriptors,
     }
-    data = prepare(args.csv, seed=args.seed)
+    train_csv = args.aqsoldb_csv if args.dataset == "aqsoldb-organic" else None
+    data = prepare(args.csv, seed=args.seed, train_csv=train_csv)
     print(
         f"ESOL: {data['n_rows']} rows -> {data['n_graphs']} graphs "
         f"({data['n_skipped']} invalid SMILES skipped)",
         flush=True,
     )
-    provenance = {"variant": args.variant, "data_sha256": data["data_sha256"]}
+    if train_csv is not None:
+        print(f"AqSolDB training set: {json.dumps(data['train_info'])}", flush=True)
+    provenance = {
+        "variant": args.variant,
+        "data_sha256": data["data_sha256"],
+        "dataset": args.dataset,
+        "train_data_sha256": data["train_data_sha256"],
+    }
     scaffold = train_one(
         data["scaffold"], cfg, out=args.out, log_mlflow=not args.no_mlflow, **provenance
     )

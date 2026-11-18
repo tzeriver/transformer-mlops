@@ -21,7 +21,14 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from src.gnn.data import featurize_rows, load_esol_rows, random_split, scaffold_split
+from src.gnn.data import (
+    featurize_rows,
+    load_aqsoldb_rows,
+    load_esol_rows,
+    random_split,
+    replace_train,
+    scaffold_split,
+)
 from src.gnn.domain import build_domain
 from src.gnn.featurize import (
     ATOM_DIM,
@@ -102,18 +109,31 @@ def git_provenance() -> dict:
     return {"git_commit": commit or "unknown", "git_dirty": "true" if status.strip() else "false"}
 
 
-def prepare(csv_path: Path, seed: int = 42) -> dict:
-    """Load + featurize ESOL; return graphs, both splits, and the raw CSV's sha256."""
+def prepare(csv_path: Path, seed: int = 42, train_csv: Path | None = None) -> dict:
+    """Load + featurize ESOL; return graphs, both splits, and the raw CSV's sha256.
+
+    With train_csv (AqSolDB), its organic subset replaces both training splits,
+    leak-filtered against ESOL val/test (see data.replace_train); val and test
+    stay ESOL. train_data_sha256 hashes whichever file the model trains on.
+    """
     rows = load_esol_rows(Path(csv_path))
     graphs, skipped = featurize_rows(rows)
-    return {
+    data = {
         "n_rows": len(rows),
         "n_graphs": len(graphs),
         "n_skipped": skipped,
         "data_sha256": file_sha256(Path(csv_path)),
+        "train_data_sha256": file_sha256(Path(csv_path)),
         "scaffold": scaffold_split(graphs, seed=seed),
         "random": random_split(graphs, seed=seed),
     }
+    if train_csv is not None:
+        extra, counts = load_aqsoldb_rows(Path(train_csv))
+        data["train_data_sha256"] = file_sha256(Path(train_csv))
+        data["scaffold"], scaffold_info = replace_train(data["scaffold"], extra, True)
+        data["random"], random_info = replace_train(data["random"], extra, False)
+        data["train_info"] = {**counts, "scaffold": scaffold_info, "random": random_info}
+    return data
 
 
 def _batches(graphs, batch_size: int, shuffle: bool, rng: random.Random):
@@ -148,6 +168,8 @@ def train_one(
     verbose: bool = True,
     variant: str | None = None,
     data_sha256: str | None = None,
+    dataset: str | None = None,
+    train_data_sha256: str | None = None,
 ) -> dict:
     """Train on one split; return metrics (+ artifact paths, mlflow run id)."""
     set_seed(cfg["seed"])
@@ -183,6 +205,8 @@ def train_one(
         mlflow.set_tag("variant", variant or "baseline")
         mlflow.log_params(git_provenance())
         mlflow.log_param("data_sha256", data_sha256 or "unknown")
+        mlflow.log_param("dataset", dataset or "esol")
+        mlflow.log_param("train_data_sha256", train_data_sha256 or data_sha256 or "unknown")
 
     try:
         best_rmse, best_state = float("inf"), None
@@ -213,6 +237,7 @@ def train_one(
         test_rmse = _predict_rmse(model, test_graphs, y_mean, y_std)
         metrics = {
             "split": split_name,
+            "dataset": dataset or "esol",
             "val_rmse": round(best_rmse, 4),
             "test_rmse": round(test_rmse, 4),
             "n_train": len(train_graphs),

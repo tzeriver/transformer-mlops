@@ -32,6 +32,8 @@ from src.gnn.pipeline import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = REPO_ROOT / "data" / "esol.csv"
+DEFAULT_AQSOLDB_CSV = REPO_ROOT / "data" / "aqsoldb.csv"
+DATASETS = ("esol", "aqsoldb-organic")
 DEFAULT_OUT = REPO_ROOT / "artifacts" / "gnn"
 # The served model (README "Status", CI's GNN training step).
 SERVED_VARIANT = "msm-desc"
@@ -39,8 +41,8 @@ SERVED_MODEL = {"pool": "mean_sum_max", "descriptors": True, "residual": False}
 
 
 @task(retries=2)
-def prepare_data(csv_path: Path, seed: int) -> dict:
-    data = prepare(csv_path, seed=seed)
+def prepare_data(csv_path: Path, seed: int, train_csv: Path | None) -> dict:
+    data = prepare(csv_path, seed=seed, train_csv=train_csv)
     print(
         f"prepared {data['n_graphs']} graphs "
         f"({data['n_skipped']} invalid SMILES skipped)"
@@ -49,8 +51,13 @@ def prepare_data(csv_path: Path, seed: int) -> dict:
 
 
 @task(retries=2)
-def train(data: dict, cfg: dict, out: Path, variant: str | None) -> dict:
-    provenance = {"variant": variant, "data_sha256": data["data_sha256"]}
+def train(data: dict, cfg: dict, out: Path, variant: str | None, dataset: str) -> dict:
+    provenance = {
+        "variant": variant,
+        "data_sha256": data["data_sha256"],
+        "dataset": dataset,
+        "train_data_sha256": data["train_data_sha256"],
+    }
     result = train_one(data["scaffold"], cfg, out=out, log_mlflow=True, **provenance)
     random_res = train_one(
         data["random"], cfg, out=None, log_mlflow=True, split_name="random", **provenance
@@ -88,6 +95,8 @@ def gnn_flow(
     residual: bool = SERVED_MODEL["residual"],
     num_layers: int = DEFAULT_CONFIG["num_layers"],
     variant: str | None = SERVED_VARIANT,
+    dataset: str = "esol",
+    aqsoldb_csv: Path = DEFAULT_AQSOLDB_CSV,
 ) -> dict:
     cfg = {
         **DEFAULT_CONFIG,
@@ -98,8 +107,9 @@ def gnn_flow(
         "residual": residual,
         "num_layers": num_layers,
     }
-    data = prepare_data(csv_path, seed)
-    result = train(data, cfg, out, variant)
+    train_csv = aqsoldb_csv if dataset == "aqsoldb-organic" else None
+    data = prepare_data(csv_path, seed, train_csv)
+    result = train(data, cfg, out, variant, dataset)
     test_rmse = evaluate(result, csv_path, seed)
     decision = register(result)
     return {"test_rmse": test_rmse, "registry": decision, "metrics": result["metrics"]}
@@ -122,6 +132,8 @@ def main() -> None:
     )
     p.add_argument("--num-layers", type=int, default=DEFAULT_CONFIG["num_layers"])
     p.add_argument("--variant", type=str, default=SERVED_VARIANT)
+    p.add_argument("--dataset", choices=DATASETS, default="esol")
+    p.add_argument("--aqsoldb-csv", type=Path, default=DEFAULT_AQSOLDB_CSV)
     args = p.parse_args()
     state = gnn_flow(
         csv_path=args.csv,
@@ -133,6 +145,8 @@ def main() -> None:
         residual=args.residual,
         num_layers=args.num_layers,
         variant=args.variant,
+        dataset=args.dataset,
+        aqsoldb_csv=args.aqsoldb_csv,
     )
     print(state)
 

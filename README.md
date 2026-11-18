@@ -69,8 +69,38 @@ python src/gnn/train.py --pool mean_sum_max --descriptors --variant msm-desc
 #   --variant NAME       MLflow run name prefix + "variant" param/tag
 ```
 
-Every MLflow run also logs `git_commit`, `git_dirty`, and the raw CSV's
-`data_sha256`.
+Every MLflow run also logs `git_commit`, `git_dirty`, the ESOL CSV's
+`data_sha256`, the training `dataset`, and the training file's
+`train_data_sha256`.
+
+Larger training set (opt-in): `--dataset aqsoldb-organic` trains on AqSolDB
+(`data/aqsoldb.csv`, 9,982 compounds, CC0; see `data/README.md`), keeping its
+organic subset: one fragment, contains carbon, only ESOL's elements. AqSolDB
+already contains every ESOL compound, so every ESOL val/test molecule and, for
+the scaffold split, every val/test scaffold is removed from it first. Val and
+test stay ESOL, so the numbers below compare like with like:
+
+| ESOL scaffold split | ESOL only (902 train) | AqSolDB organic (~7,900 train) |
+|---|---|---|
+| seed 0 | 0.760 | 0.737 |
+| seed 1 | 0.805 | 0.854 |
+| seed 2 | 0.779 | 0.754 |
+| seed 3 | 0.843 | 0.740 |
+| seed 4 | 0.908 | 0.798 |
+| mean | 0.819 | 0.777 |
+
+Better on 4 of 5 splits, about 5% lower RMSE on average: a modest gain, with
+the same msm-desc settings tuned on ESOL. Training on all of AqSolDB (salts,
+metals, inorganics included) did not help on these molecules (mean 0.828).
+The bigger change is coverage: on the default split the median nearest
+training-set similarity of test molecules rises from 0.35 to 0.50, and the
+purines that ESOL-only badly over-predicts (uric acid, guanine) come out
+within 0.35 log units. Training takes ~10x longer (~5 min here vs ~30 s), so
+CI and the served model stay on ESOL for now.
+
+AqSolDB also gives a measurement-noise reference: for the 2,236 compounds
+reported by more than one source, the between-source SD has median 0.13 and
+RMS 0.52 log units.
 
 Ablation over 5 scaffold splits (split seeds 0-4, 100 epochs, best-val epoch):
 
