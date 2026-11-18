@@ -274,3 +274,30 @@ def test_replace_train_removes_val_test_leaks(tmp_path):
     assert info["dropped_same_molecule"] == 1 and info["dropped_shared_scaffold"] == 2
     new, info = replace_train(splits, rows, exclude_scaffolds=False)
     assert sorted(g.smiles for g in new["train"]) == ["CC1CCCCC1", "CCCC", "Cc1ccccc1"]
+
+
+_GAMMA_CYCLODEXTRIN = (
+    "OCC1OC2OC3C(O)C(O)C(OC3CO)OC4C(O)C(O)C(OC4CO)OC5C(O)C(O)C(OC5CO)OC6C(O)C(O)"
+    "C(OC6CO)OC7C(O)C(O)C(OC7CO)OC8C(O)C(O)C(OC8CO)OC9C(O)C(O)C(OC9CO)OC1C(O)C2O"
+)
+
+
+def test_extreme_descriptors_are_clipped_and_flagged(tmp_path, monkeypatch):
+    # RDKit counts hundreds of rings for cyclodextrins; unclipped, that one
+    # descriptor once pushed a prediction to log S +106.
+    graphs = [featurize(s, y=y) for s, y in _SMILES]
+    splits = {"train": graphs[:8], "val": graphs[8:10], "test": graphs[10:]}
+    out = tmp_path / "gnn"
+    cfg = {
+        "hidden_dim": 16, "num_layers": 2, "dropout": 0.0, "lr": 1e-2,
+        "batch_size": 8, "epochs": 2, "seed": 0, "pool": "mean", "descriptors": True,
+    }
+    train_one(splits, cfg, out=out, log_mlflow=False, verbose=False)
+    monkeypatch.setattr(serve, "GNN_ARTIFACT", out / "model.pt")
+    monkeypatch.setattr(serve, "_gnn_model", None)
+    client = TestClient(serve.app)
+    body = client.post("/predict-solubility", json={"smiles": _GAMMA_CYCLODEXTRIN}).json()
+    assert any("descriptors far outside" in w and "ring count" in w for w in body["warnings"])
+    # Clipped inputs keep the output on the same scale as ordinary molecules.
+    ordinary = client.post("/predict-solubility", json={"smiles": "CCO"}).json()
+    assert abs(body["predicted_log_solubility"] - ordinary["predicted_log_solubility"]) < 20

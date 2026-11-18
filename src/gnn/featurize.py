@@ -52,6 +52,10 @@ BOND_DIM = (len(_BOND_TYPES) + 1) + 1 + 1
 # The first four are Delaney's original ESOL inputs; message passing over a
 # few bonds can't easily rebuild these global properties.
 DESC_DIM = 8
+DESC_NAMES = (
+    "logP", "molecular weight", "rotatable bonds", "aromatic fraction",
+    "TPSA", "H-bond donors", "H-bond acceptors", "ring count",
+)
 
 
 def _one_hot(value, choices) -> list[float]:

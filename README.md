@@ -82,21 +82,34 @@ test stay ESOL, so the numbers below compare like with like:
 
 | ESOL scaffold split | ESOL only (902 train) | AqSolDB organic (~7,900 train) |
 |---|---|---|
-| seed 0 | 0.760 | 0.737 |
-| seed 1 | 0.805 | 0.854 |
-| seed 2 | 0.779 | 0.754 |
-| seed 3 | 0.843 | 0.740 |
-| seed 4 | 0.908 | 0.798 |
-| mean | 0.819 | 0.777 |
+| seed 0 | 0.768 | 0.733 |
+| seed 1 | 0.815 | 0.849 |
+| seed 2 | 0.770 | 0.729 |
+| seed 3 | 0.787 | 0.750 |
+| seed 4 | 0.907 | 0.777 |
+| mean | 0.809 | 0.768 |
 
-Better on 4 of 5 splits, about 5% lower RMSE on average: a modest gain, with
-the same msm-desc settings tuned on ESOL. Training on all of AqSolDB (salts,
-metals, inorganics included) did not help on these molecules (mean 0.828).
-The bigger change is coverage: on the default split the median nearest
-training-set similarity of test molecules rises from 0.35 to 0.50, and the
-purines that ESOL-only badly over-predicts (uric acid, guanine) come out
-within 0.35 log units. Training takes ~10x longer (~5 min here vs ~30 s), so
-CI and the served model stay on ESOL for now.
+On ESOL-type molecules: better on 4 of 5 splits, about 5% lower RMSE. Training
+on all of AqSolDB (salts, metals, inorganics included) did not help there
+(mean 0.828, measured before the descriptor clip below).
+
+On broader chemistry the gain is larger. On scaffold-split test sets drawn
+from AqSolDB itself (758 organic compounds not in ESOL, new scaffolds), RMSE
+was 1.33 / 1.36 / 1.36 for the ESOL-only model vs 1.03 / 1.12 / 1.11 for the
+AqSolDB model (split seeds 0-2), and about 1.45 vs 1.1 on the half of those
+molecules that look least like ESOL (nearest Tanimoto < 0.3).
+
+Retuning for the larger set did not help: hidden 64/128 x 2/3 layers, 100 vs
+200 epochs and dropout 0.2 all landed within noise (validation RMSE
+0.766-0.793), so the msm-desc defaults stay. Training takes ~10x longer (~5
+min here vs ~30 s), so CI and the served model stay on ESOL for now.
+
+Descriptor clipping: standardized descriptors are clipped to +-5 training SDs
+(`DESC_CLIP` in `src/gnn/model.py`), and a hard domain warning names any
+descriptor beyond that. RDKit counts 264 rings for gamma-cyclodextrin, and
+before the clip that one value drove a prediction to log S +106. Clipping
+also moved the served ESOL model's scaffold test RMSE from 0.939 to 0.929
+without retraining.
 
 AqSolDB also gives a measurement-noise reference: for the 2,236 compounds
 reported by more than one source, the between-source SD has median 0.13 and

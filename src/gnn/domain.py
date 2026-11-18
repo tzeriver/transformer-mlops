@@ -4,8 +4,9 @@ Two kinds of signal, both computed against the training split and stored in
 the model artifact (the container has no data/ directory):
 
 - hard checks: elements never seen in training, several disconnected
-  fragments (salts, mixtures), no carbon at all, or a heavy-atom count outside
-  the training range. ESOL is single organic molecules, so these inputs are
+  fragments (salts, mixtures), no carbon at all, a heavy-atom count outside
+  the training range, or a whole-molecule descriptor more than DESC_CLIP
+  training SDs from the training mean (the model clips it there). ESOL is single organic molecules, so these inputs are
   outside what the model can say anything about.
 - nearest-neighbour similarity: max Tanimoto similarity (Morgan radius 2,
   2048 bits) to any training molecule. Across 5 scaffold splits, test
@@ -16,10 +17,12 @@ the model artifact (the container has no data/ directory):
 
 from __future__ import annotations
 
+import torch
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
 
-from src.gnn.featurize import parse_mol
+from src.gnn.featurize import DESC_NAMES, featurize, parse_mol
+from src.gnn.model import DESC_CLIP
 
 LOW_SIMILARITY = 0.3
 
@@ -34,11 +37,15 @@ def build_domain(train_smiles: list[str]) -> dict:
     """Summarize the training molecules into a picklable dict for the artifact."""
     mols = [parse_mol(s) for s in train_smiles]
     heavy = [m.GetNumHeavyAtoms() for m in mols]
+    desc = [featurize(s).desc for s in train_smiles]
+    stacked = torch.stack(desc)
     return {
         "elements": sorted({a.GetAtomicNum() for m in mols for a in m.GetAtoms()}),
         "max_fragments": max(len(Chem.GetMolFrags(m)) for m in mols),
         "heavy_atoms": [min(heavy), max(heavy)],
         "fingerprints": [fingerprint(m).ToBinary() for m in mols],
+        "desc_mean": stacked.mean(dim=0).tolist(),
+        "desc_std": stacked.std(dim=0).clamp(min=1e-6).tolist(),
     }
 
 
@@ -50,6 +57,9 @@ class DomainChecker:
         self.max_fragments = domain["max_fragments"]
         self.min_heavy, self.max_heavy = domain["heavy_atoms"]
         self.fps = [DataStructs.ExplicitBitVect(b) for b in domain["fingerprints"]]
+        # Older artifacts have no descriptor stats; that check is then skipped.
+        self.desc_mean = domain.get("desc_mean")
+        self.desc_std = domain.get("desc_std")
 
     def check(self, mol) -> tuple[list[str], float]:
         """Return (warnings, nearest training-set Tanimoto similarity)."""
@@ -72,6 +82,17 @@ class DomainChecker:
                 f"{heavy} heavy atoms, outside the training range "
                 f"{self.min_heavy}-{self.max_heavy}"
             )
+        if self.desc_mean is not None:
+            desc = featurize(Chem.MolToSmiles(mol)).desc.tolist()
+            far = [
+                name
+                for name, v, m, s in zip(DESC_NAMES, desc, self.desc_mean, self.desc_std)
+                if abs(v - m) / s > DESC_CLIP
+            ]
+            if far:
+                warnings.append(
+                    f"descriptors far outside the training range: {', '.join(far)}"
+                )
         similarity = max(DataStructs.BulkTanimotoSimilarity(fingerprint(mol), self.fps))
         if similarity < LOW_SIMILARITY:
             warnings.append(

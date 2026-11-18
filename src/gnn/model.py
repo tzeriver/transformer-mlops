@@ -11,7 +11,10 @@ Optional (defaults reproduce the original model exactly):
 - residual=True: skip connections on layers after the first.
 - desc_dim>0: concat standardized whole-molecule descriptors (featurize.py
   DESC_DIM) to the pooled vector. Standardization stats live in buffers, so
-  they are saved in the state_dict with the weights.
+  they are saved in the state_dict with the weights. Standardized values are
+  clipped to +-DESC_CLIP: RDKit's ring count is 264 for gamma-cyclodextrin
+  (~225 SD above AqSolDB's mean), and an unclipped value that size drove the
+  linear head to a predicted log S of +106.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ POOLS = ("mean", "mean_sum_max")
 # Sum pooling grows with atom count (~10-30 heavy atoms in ESOL); dividing by
 # 10 keeps it on roughly the same scale as the mean and max features.
 _SUM_SCALE = 10.0
+DESC_CLIP = 5.0
 
 
 class GCNRegressor(nn.Module):
@@ -130,5 +134,6 @@ class GCNRegressor(nn.Module):
         if self.desc_dim:
             if desc is None:
                 raise ValueError("model was built with desc_dim > 0 but no descriptors were passed")
-            pooled = torch.cat([pooled, (desc - self.desc_mean) / self.desc_std], dim=1)
+            z = ((desc - self.desc_mean) / self.desc_std).clamp(-DESC_CLIP, DESC_CLIP)
+            pooled = torch.cat([pooled, z], dim=1)
         return self.head(pooled).squeeze(-1)
