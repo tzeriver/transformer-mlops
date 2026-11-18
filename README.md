@@ -45,6 +45,8 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 # experiment "esol-gnn", model registry "esol-gnn" (champion / challenger aliases)
 
 python flows/gnn_flow.py   # Prefect: data prep -> train -> evaluate -> register (retries=2 per task)
+# trains the served msm-desc model by default; takes the same model options as
+# src/gnn/train.py (e.g. --pool mean --no-descriptors --variant baseline)
 # Sandbox note: this environment's proxy vars break Prefect's ephemeral
 # server startup (httpx chokes parsing them); the flow only talks to
 # localhost, so run it with proxies unset:
