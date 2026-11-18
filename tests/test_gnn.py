@@ -10,12 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import serve
 from src.gnn.data import scaffold_split
+from src.gnn.domain import DomainChecker, build_domain
 from src.gnn.featurize import (
     ATOM_DIM,
     BOND_DIM,
     DESC_DIM,
     collate_graphs,
     featurize,
+    parse_mol,
     stack_descriptors,
 )
 from src.gnn.model import GCNRegressor
@@ -193,3 +195,38 @@ def test_bond_free_molecules_serve(tmp_path, monkeypatch):
     for smiles in ["C", "O", "[Na+].[Cl-]"]:
         r = client.post("/predict-solubility", json={"smiles": smiles})
         assert r.status_code == 200, smiles
+
+
+def test_domain_flags_out_of_domain_inputs():
+    checker = DomainChecker(build_domain([s for s, _ in _SMILES]))
+    warnings, sim = checker.check(parse_mol("CCO"))  # a training molecule
+    assert warnings == [] and sim == 1.0
+    warnings, _ = checker.check(parse_mol("[Na+].[Cl-]"))
+    text = " ".join(warnings)
+    assert "Na" in text and "fragments" in text and "no carbon" in text
+    warnings, _ = checker.check(parse_mol("CC[Si](C)(C)C"))
+    assert any("Si" in w for w in warnings)
+
+
+def test_endpoint_returns_domain_fields(tmp_path, monkeypatch):
+    out = _tiny_gnn_artifact(tmp_path)
+    monkeypatch.setattr(serve, "GNN_ARTIFACT", out / "model.pt")
+    monkeypatch.setattr(serve, "_gnn_model", None)
+    client = TestClient(serve.app)
+    body = client.post("/predict-solubility", json={"smiles": "CCO"}).json()
+    assert body["nearest_train_similarity"] == 1.0 and body["warnings"] == []
+    body = client.post("/predict-solubility", json={"smiles": "O"}).json()
+    assert any("no carbon" in w for w in body["warnings"])
+
+
+def test_artifact_without_domain_still_serves(tmp_path, monkeypatch):
+    # Artifacts saved before the domain check existed load without it.
+    out = _tiny_gnn_artifact(tmp_path)
+    bundle = torch.load(out / "model.pt", weights_only=False)
+    del bundle["domain"]
+    torch.save(bundle, out / "model.pt")
+    monkeypatch.setattr(serve, "GNN_ARTIFACT", out / "model.pt")
+    monkeypatch.setattr(serve, "_gnn_model", None)
+    r = TestClient(serve.app).post("/predict-solubility", json={"smiles": "O"})
+    assert r.status_code == 200
+    assert r.json()["nearest_train_similarity"] is None and r.json()["warnings"] == []

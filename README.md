@@ -13,8 +13,8 @@ CI pipeline, a container image, and a weekly drift check.
 - **API** — FastAPI service (`src/serve.py`):
   - `GET /health` → `{"status": "ok"}`
   - `POST /predict` with `{"text": "..."}` → `{"label", "confidence", "probabilities"}`
-  - `POST /predict-solubility` with `{"smiles": "CCO"}` → `{"smiles", "predicted_log_solubility"}`
-    (ESOL GNN track; invalid SMILES → 422)
+  - `POST /predict-solubility` with `{"smiles": "CCO"}` → `{"smiles", "predicted_log_solubility",
+    "nearest_train_similarity", "warnings"}` (ESOL GNN track; invalid SMILES → 422)
 
 ## ESOL GNN track (Gap 2 + Gap 4)
 
@@ -56,7 +56,7 @@ uvicorn src.serve:app --port 8000
 curl -X POST localhost:8000/predict-solubility \
   -H 'Content-Type: application/json' \
   -d '{"smiles":"CCO"}'
-# {"smiles":"CCO","predicted_log_solubility":...}
+# {"smiles":"CCO","predicted_log_solubility":...,"nearest_train_similarity":1.0,"warnings":[]}
 ```
 
 Model options (all off by default, so the default model is unchanged):
@@ -93,8 +93,30 @@ The seed-42 scaffold split is one of the harder ones, so this sits above the
 the same split. Registry: this run was promoted to champion (val 0.745 beat the
 previous champion's 1.043). See `artifacts/gnn/metrics.json`.
 
-Out of domain: ESOL is organic molecules. Predictions for inorganics, salts
-or water itself are returned without warning and are not meaningful.
+Applicability domain (`src/gnn/domain.py`): every solubility response says
+how much the input resembles the training data. The artifact stores a summary
+of the training split (elements, fragment count, heavy-atom range, Morgan
+fingerprints, ~40 KB), and the endpoint returns:
+
+- `warnings`: empty when the input looks like the training data. Hard
+  warnings for elements never seen in training, salts/mixtures (several
+  fragments), no carbon, or a heavy-atom count outside the training range —
+  the prediction is still returned but is not meaningful (e.g. water, NaCl,
+  siloxanes). A soft warning when the nearest training molecule has Tanimoto
+  similarity < 0.3.
+- `nearest_train_similarity`: that nearest-neighbour Tanimoto value.
+
+The soft warning is a weak, average-level signal, not an error bar. Over 5
+scaffold splits it flagged ~28% of test molecules, whose RMSE averaged 0.98 vs
+0.74 for the rest (larger on every split), but per-molecule rank correlation
+with error is only about −0.1 to −0.25. Hard warnings fire on ESOL itself only
+for the largest glycosides (digoxin-size), which exceed the training size
+range. Artifacts saved before this existed still serve, with
+`nearest_train_similarity: null` and no warnings.
+
+A 5-seed ensemble's spread was also tried as a per-prediction uncertainty and
+dropped: it ranked errors poorly (Spearman +0.06 to +0.26) and only 28-37% of
+errors fell within 2x the spread, for ~0.02 RMSE gain at 5x training cost.
 
 ## Quickstart
 
@@ -159,6 +181,7 @@ src/
     featurize.py   RDKit SMILES -> molecular graph (atom/bond features)
     data.py        ESOL loading, scaffold + random splits
     model.py       plain-PyTorch GCN regressor (bond-gated messages)
+    domain.py      applicability domain: out-of-domain warnings + similarity
     pipeline.py    train/evaluate/champion-challenger promotion (MLflow)
     train.py       CLI: scaffold model + random-split contrast + registry gate
     evaluate.py    artifact evaluation + RMSE quality gate

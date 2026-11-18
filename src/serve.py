@@ -73,16 +73,18 @@ GNN_ARTIFACT = Path(__file__).resolve().parent.parent / "artifacts" / "gnn" / "m
 _gnn_model = None
 _gnn_y_mean = None
 _gnn_y_std = None
+_gnn_domain = None  # DomainChecker, or None for artifacts saved before it existed
 
 
 def _ensure_gnn_loaded() -> None:
-    global _gnn_model, _gnn_y_mean, _gnn_y_std
+    global _gnn_model, _gnn_y_mean, _gnn_y_std, _gnn_domain
     if _gnn_model is not None:
         return
     if not GNN_ARTIFACT.exists():
         raise RuntimeError(
             f"GNN artifact not found at {GNN_ARTIFACT}; run src/gnn/train.py first"
         )
+    from src.gnn.domain import DomainChecker
     from src.gnn.pipeline import build_model
 
     bundle = torch.load(GNN_ARTIFACT, map_location="cpu", weights_only=False)
@@ -90,6 +92,7 @@ def _ensure_gnn_loaded() -> None:
     _gnn_model.load_state_dict(bundle["state_dict"])
     _gnn_model.eval()
     _gnn_y_mean, _gnn_y_std = bundle["y_mean"], bundle["y_std"]
+    _gnn_domain = DomainChecker(bundle["domain"]) if "domain" in bundle else None
 
 
 class SolubilityRequest(BaseModel):
@@ -99,11 +102,20 @@ class SolubilityRequest(BaseModel):
 class SolubilityResponse(BaseModel):
     smiles: str
     predicted_log_solubility: float
+    # Applicability domain: empty warnings = looks like the training data.
+    # Both stay empty/None when the artifact predates the domain check.
+    nearest_train_similarity: float | None = None
+    warnings: list[str] = []
 
 
 @app.post("/predict-solubility", response_model=SolubilityResponse)
 def predict_solubility(req: SolubilityRequest) -> SolubilityResponse:
-    from src.gnn.featurize import collate_graphs, featurize, stack_descriptors
+    from src.gnn.featurize import (
+        collate_graphs,
+        featurize,
+        parse_mol,
+        stack_descriptors,
+    )
 
     _ensure_gnn_loaded()
     try:
@@ -114,7 +126,13 @@ def predict_solubility(req: SolubilityRequest) -> SolubilityResponse:
     desc = stack_descriptors([graph])
     with torch.no_grad():
         pred = _gnn_model(x, edge_index, edge_attr, batch, desc)[0].item()
+    warnings, similarity = [], None
+    if _gnn_domain is not None:
+        warnings, similarity = _gnn_domain.check(parse_mol(req.smiles))
+        similarity = round(similarity, 4)
     return SolubilityResponse(
         smiles=req.smiles,
         predicted_log_solubility=round(pred * _gnn_y_std + _gnn_y_mean, 4),
+        nearest_train_similarity=similarity,
+        warnings=warnings,
     )

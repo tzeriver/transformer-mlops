@@ -22,6 +22,7 @@ from torch import nn
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.gnn.data import featurize_rows, load_esol_rows, random_split, scaffold_split
+from src.gnn.domain import build_domain
 from src.gnn.featurize import (
     ATOM_DIM,
     BOND_DIM,
@@ -232,6 +233,9 @@ def train_one(
                     "y_std": y_std,
                     "atom_dim": ATOM_DIM,
                     "bond_dim": BOND_DIM,
+                    # Applicability-domain summary of the training split, used
+                    # by serve.py to flag out-of-domain inputs.
+                    "domain": build_domain([g.smiles for g in train_graphs]),
                 },
                 out / "model.pt",
             )
