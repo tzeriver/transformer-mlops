@@ -36,7 +36,7 @@ jobs:
         run: python src/gnn/train.py --epochs 100 --pool mean_sum_max --descriptors --dataset aqsoldb-organic --variant msm-desc-aqsoldb
 
       - name: Evaluate GNN (quality gate)
-        run: python src/gnn/evaluate.py --max-rmse 1.5
+        run: python src/gnn/evaluate.py --max-rmse 1.0
 
       - name: Build container image
         run: docker build -t transformer-mlops:${{ github.sha }} .

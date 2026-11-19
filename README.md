@@ -39,13 +39,14 @@ python src/gnn/train.py --epochs 100
 # ./mlruns, and runs the champion/challenger registry gate (a new model only
 # becomes champion when it beats the current champion's validation RMSE)
 
-python src/gnn/evaluate.py --max-rmse 1.5   # recomputes scaffold test RMSE from the artifact
+python src/gnn/evaluate.py --max-rmse 1.0   # recomputes scaffold test RMSE from the artifact
 
 mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
 # experiment "esol-gnn", model registry "esol-gnn" (champion / challenger aliases)
 
 python flows/gnn_flow.py   # Prefect: data prep -> train -> evaluate -> register (retries=2 per task)
-# trains the served msm-desc model by default; takes the same model options as
+# trains the served model (msm-desc on AqSolDB, variant msm-desc-aqsoldb) by
+# default; takes the same model options and --dataset as
 # src/gnn/train.py (e.g. --pool mean --no-descriptors --variant baseline)
 # Sandbox note: this environment's proxy vars break Prefect's ephemeral
 # server startup (httpx chokes parsing them); the flow only talks to
@@ -101,15 +102,16 @@ molecules that look least like ESOL (nearest Tanimoto < 0.3).
 
 Retuning for the larger set did not help: hidden 64/128 x 2/3 layers, 100 vs
 200 epochs and dropout 0.2 all landed within noise (validation RMSE
-0.766-0.793), so the msm-desc defaults stay. Training takes ~10x longer (~5
-min here vs ~30 s), so CI and the served model stay on ESOL for now.
+0.766-0.793), so the msm-desc defaults stay. Training takes ~7x longer: in
+CI the GNN step goes from ~30 s to ~3.5 min and the whole job from ~5.4 to
+~8.1 min. The served model is now trained this way (see Status).
 
 Descriptor clipping: standardized descriptors are clipped to +-5 training SDs
 (`DESC_CLIP` in `src/gnn/model.py`), and a hard domain warning names any
 descriptor beyond that. RDKit counts 264 rings for gamma-cyclodextrin, and
 before the clip that one value drove a prediction to log S +106. Clipping
-also moved the served ESOL model's scaffold test RMSE from 0.939 to 0.929
-without retraining.
+also moved the earlier ESOL-trained model's scaffold test RMSE from 0.939 to
+0.929 without retraining.
 
 AqSolDB also gives a measurement-noise reference: for the 2,236 compounds
 reported by more than one source, the between-source SD has median 0.13 and
@@ -128,13 +130,15 @@ slightly optimistic. A single split's RMSE moves by ~±0.08, so compare
 variants over several split seeds, not one run.
 
 Status (GNN track, 100 epochs, seed 42, 2-layer GCN hidden 64,
-`--pool mean_sum_max --descriptors`, variant `msm-desc`): scaffold-split test
-RMSE **0.939** (val 0.745) vs random-split test RMSE **0.669** (val 0.559) —
-the scaffold split stays the honest number; the random one flatters the model.
-The seed-42 scaffold split is one of the harder ones, so this sits above the
-5-split mean in the table above. The previous default model scored 1.174 on
-the same split. Registry: this run was promoted to champion (val 0.745 beat the
-previous champion's 1.043). See `artifacts/gnn/metrics.json`.
+`--pool mean_sum_max --descriptors --dataset aqsoldb-organic`, variant
+`msm-desc-aqsoldb`, 7,843 training molecules): scaffold-split test RMSE
+**0.795** (val 0.655) vs random-split test RMSE **0.644** (val 0.494) — the
+scaffold split stays the honest number; the random one flatters the model.
+The same architecture trained on ESOL alone scored 0.929 on this split, and
+the original default model 1.174. Training is not bit-for-bit repeatable
+across runs (a second seed-42 run scored 0.809), so the CI gate sits at 1.0.
+Registry: this run is champion v6 (val 0.655 beat v5's 0.745). See
+`artifacts/gnn/metrics.json`.
 
 Applicability domain (`src/gnn/domain.py`): every solubility response says
 how much the input resembles the training data. The artifact stores a summary
@@ -182,8 +186,8 @@ curl -X POST localhost:8000/predict \
 
 Every push runs: **lint (ruff) → unit tests (pytest) → train → quality gate
 (`evaluate.py`, fails below 85% test accuracy) → train GNN (the served
-`msm-desc` variant) → GNN quality gate (`src/gnn/evaluate.py`, fails above 1.5
-scaffold test RMSE) → build container image → smoke-test the running image**
+`msm-desc` variant on AqSolDB) → GNN quality gate (`src/gnn/evaluate.py`, fails
+above 1.0 scaffold test RMSE) → build container image → smoke-test the running image**
 (`/health` + a real `/predict` and `/predict-solubility` call). The last step,
 which runs even when an earlier one fails, uploads `mlflow.db` + `mlruns/`
 (both tracks' runs) as a downloadable run artifact.

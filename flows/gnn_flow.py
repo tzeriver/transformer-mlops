@@ -36,7 +36,8 @@ DEFAULT_AQSOLDB_CSV = REPO_ROOT / "data" / "aqsoldb.csv"
 DATASETS = ("esol", "aqsoldb-organic")
 DEFAULT_OUT = REPO_ROOT / "artifacts" / "gnn"
 # The served model (README "Status", CI's GNN training step).
-SERVED_VARIANT = "msm-desc"
+SERVED_VARIANT = "msm-desc-aqsoldb"
+SERVED_DATASET = "aqsoldb-organic"
 SERVED_MODEL = {"pool": "mean_sum_max", "descriptors": True, "residual": False}
 
 
@@ -95,7 +96,7 @@ def gnn_flow(
     residual: bool = SERVED_MODEL["residual"],
     num_layers: int = DEFAULT_CONFIG["num_layers"],
     variant: str | None = SERVED_VARIANT,
-    dataset: str = "esol",
+    dataset: str = SERVED_DATASET,
     aqsoldb_csv: Path = DEFAULT_AQSOLDB_CSV,
 ) -> dict:
     cfg = {
@@ -132,7 +133,7 @@ def main() -> None:
     )
     p.add_argument("--num-layers", type=int, default=DEFAULT_CONFIG["num_layers"])
     p.add_argument("--variant", type=str, default=SERVED_VARIANT)
-    p.add_argument("--dataset", choices=DATASETS, default="esol")
+    p.add_argument("--dataset", choices=DATASETS, default=SERVED_DATASET)
     p.add_argument("--aqsoldb-csv", type=Path, default=DEFAULT_AQSOLDB_CSV)
     args = p.parse_args()
     state = gnn_flow(
