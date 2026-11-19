@@ -33,7 +33,7 @@ jobs:
         run: python src/evaluate.py --min-accuracy 0.85
 
       - name: Train GNN model
-        run: python src/gnn/train.py --epochs 100 --pool mean_sum_max --descriptors --variant msm-desc
+        run: python src/gnn/train.py --epochs 100 --pool mean_sum_max --descriptors --dataset aqsoldb-organic --variant msm-desc-aqsoldb
 
       - name: Evaluate GNN (quality gate)
         run: python src/gnn/evaluate.py --max-rmse 1.5
